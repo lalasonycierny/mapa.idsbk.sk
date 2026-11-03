@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS BK – štatistiky meškaní</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2430;--mut:#6b7686;--bd:#e1e5ea;--ac:#0a84c6}
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212a;--fg:#e6eaf0;--mut:#8b96a6;--bd:#2b3340;--ac:#4cb3ee}}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:14px 20px;border-bottom:1px solid var(--bd);background:var(--card);position:sticky;top:0;z-index:1000}
+h1{font-size:18px;margin:0 0 8px}
+.ctl{display:flex;flex-wrap:wrap;gap:8px}
+select{padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg);font:inherit}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.card,.box{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.card b{display:block;font-size:24px}.card span{color:var(--mut);font-size:13px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
+h2{font-size:15px;margin:0 0 8px}
+canvas{max-height:260px}
+#map{height:460px;border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--bd)}
+th:first-child,td:first-child{text-align:left}
+th{cursor:pointer;color:var(--mut);font-weight:600}
+.wh td{text-align:center;padding:3px 2px;font-size:11px}
+.scroll{overflow-x:auto}
+.mut{color:var(--mut);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>IDS BK – štatistiky meškaní a heatmapy</h1>
+  <div class="ctl">
+    <select id="kind"></select><select id="value"></select><select id="dtp"></select>
+    <span class="mut" id="upd" style="align-self:center"></span>
+  </div>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+  <div class="box">
+    <h2>Heatmapa <select id="mode">
+      <option value="delay">súčet meškaní (kde sa meškanie hromadí)</option>
+      <option value="share">podiel meškajúcich vozidiel (≥ 3 min)</option>
+      <option value="traffic">hustota premávky</option></select></h2>
+    <div id="map"></div>
+  </div>
+  <div class="grid2">
+    <div class="box"><h2>Meškanie podľa hodiny</h2><canvas id="cHour"></canvas></div>
+    <div class="box"><h2>Meškanie podľa dňa v týždni</h2><canvas id="cWd"></canvas></div>
+  </div>
+  <div class="box"><h2>Dlhodobý trend (po dňoch)</h2><canvas id="cTrend"></canvas></div>
+  <div class="box scroll"><h2>Priemerné meškanie: deň × hodina (min)</h2><table class="wh" id="wh"></table></div>
+  <div class="grid2">
+    <div class="box scroll"><h2>Podľa typu dopravy</h2><table id="tType"></table></div>
+    <div class="box scroll"><h2>Linky (klik na hlavičku = zoradenie)</h2><table id="tLine"></table></div>
+  </div>
+  <p class="mut">Pozorovanie = jedno vozidlo v jednom zábere (cca raz za 90 s). Meškanie je v celých minútach, záporné hodnoty sa berú ako 0. Zdroj: mapa.idsbk.sk.</p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const WD=["Po","Ut","St","Št","Pi","So","Ne"], $=id=>document.getElementById(id);
+const TYPES={trolley:"Trolejbus",tram:"Električka",bus:"Autobus",train:"Vlak",urban:"MHD"};
+let idx,data,charts={},map,heat,sortKey="n",sortDir=-1;
+Chart.defaults.color=getComputedStyle(document.body).color;
+Chart.defaults.borderColor="rgba(128,128,128,.2)";
+const j=async u=>{const r=await fetch(u);if(!r.ok)throw new Error(u);return r.json()};
+const opt=(sel,items)=>{sel.innerHTML=items.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")};
+
+async function init(){
+  idx=await j("data/index.json");
+  $("upd").textContent="Aktualizované: "+new Date(idx.updated).toLocaleString("sk-SK");
+  opt($("kind"),Object.entries(idx.kinds).map(([k,v])=>[k,v.label]));
+  $("kind").value=idx.kinds.last7?"last7":Object.keys(idx.kinds)[0];
+  fillValues();
+  map=L.map("map").setView([48.15,17.1],11);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18,attribution:"© OpenStreetMap contributors"}).addTo(map);
+  ["kind","value","dtp"].forEach(id=>$(id).onchange=()=>{if(id==="kind")fillValues();else if(id==="value")fillDt();load()});
+  $("mode").onchange=drawHeat;
+  trend(); load();
+}
+function fillValues(){
+  const k=idx.kinds[$("kind").value];
+  opt($("value"),k.values.map(v=>[v.value,v.label]));
+  fillDt();
+}
+function fillDt(){
+  const k=idx.kinds[$("kind").value], v=k.values.find(x=>x.value===$("value").value)||k.values[0];
+  const prev=$("dtp").value;
+  opt($("dtp"),v.daytypes.map(d=>[d,idx.daytypes[d]]));
+  if(v.daytypes.includes(prev))$("dtp").value=prev;
+}
+async function load(){
+  try{data=await j(`data/${$("kind").value}_${$("value").value}_${$("dtp").value}.json`)}catch(e){return}
+  const s=data.summary;
+  $("cards").innerHTML=[
+    [s.n.toLocaleString("sk-SK"),"pozorovaní"],[data.days,"dní dát"],
+    [s.avg+" min","priemerné meškanie"],[s.p3+" %","meškajú ≥ 3 min"],[s.p5+" %","meškajú ≥ 5 min"],[s.max+" min","max. meškanie"]
+  ].map(([a,b])=>`<div class="card"><b>${a}</b><span>${b}</span></div>`).join("");
+  chart("cHour",{type:"bar",data:{labels:[...Array(24).keys()].map(h=>h+":00"),datasets:[
+    {label:"priem. meškanie (min)",data:data.by_hour.map(x=>x.avg),backgroundColor:"#0a84c6",yAxisID:"y"},
+    {label:"≥ 3 min (%)",data:data.by_hour.map(x=>x.p3),type:"line",borderColor:"#e5484d",yAxisID:"y1",tension:.3}]},
+    options:{scales:{y:{beginAtZero:true},y1:{position:"right",beginAtZero:true,grid:{drawOnChartArea:false}}}}});
+  chart("cWd",{type:"bar",data:{labels:WD,datasets:[
+    {label:"priem. meškanie (min)",data:data.by_weekday.map(x=>x.avg),backgroundColor:"#0a84c6",yAxisID:"y"},
+    {label:"≥ 3 min (%)",data:data.by_weekday.map(x=>x.p3),type:"line",borderColor:"#e5484d",yAxisID:"y1",tension:.3}]},
+    options:{scales:{y:{beginAtZero:true},y1:{position:"right",beginAtZero:true,grid:{drawOnChartArea:false}}}}});
+  matrix(); tables(); drawHeat();
+}
+function chart(id,cfg){charts[id]&&charts[id].destroy();charts[id]=new Chart($(id),cfg)}
+async function trend(){
+  const t=await j("data/trend.json");
+  chart("cTrend",{type:"line",data:{labels:t.map(x=>x.d),datasets:[
+    {label:"priem. meškanie (min)",data:t.map(x=>x.avg),borderColor:"#0a84c6",yAxisID:"y",tension:.25},
+    {label:"≥ 3 min (%)",data:t.map(x=>x.p3),borderColor:"#e5484d",yAxisID:"y1",tension:.25}]},
+    options:{scales:{y:{beginAtZero:true},y1:{position:"right",beginAtZero:true,grid:{drawOnChartArea:false}}}}});
+}
+function matrix(){
+  const m=data.weekday_hour,mx=Math.max(1,...m.flat().filter(v=>v!==null));
+  let h="<tr><th></th>"+[...Array(24).keys()].map(i=>`<th>${i}</th>`).join("")+"</tr>";
+  m.forEach((row,w)=>{h+=`<tr><td>${WD[w]}</td>`+row.map(v=>v===null?"<td></td>":
+    `<td style="background:rgba(229,72,77,${(.08+.85*v/mx).toFixed(2)})">${v.toFixed(1)}</td>`).join("")+"</tr>"});
+  $("wh").innerHTML=h;
+}
+function tables(){
+  $("tType").innerHTML="<tr><th>Typ</th><th>n</th><th>priem. min</th><th>≥3 min %</th><th>max</th></tr>"+
+    data.by_type.map(r=>`<tr><td>${TYPES[r.type]||r.type}</td><td>${r.n}</td><td>${r.avg}</td><td>${r.p3}</td><td>${r.max}</td></tr>`).join("");
+  const rows=[...data.by_line].sort((a,b)=>(a[sortKey]>b[sortKey]?1:-1)*sortDir).slice(0,60);
+  const th=(k,l)=>`<th data-k="${k}">${l}${sortKey===k?(sortDir>0?" ▲":" ▼"):""}</th>`;
+  $("tLine").innerHTML="<tr>"+th("line","Linka")+th("type","Typ")+th("n","n")+th("avg","priem. min")+th("p3","≥3 min %")+th("max","max")+"</tr>"+
+    rows.map(r=>`<tr><td>${r.line}</td><td>${TYPES[r.type]||r.type}</td><td>${r.n}</td><td>${r.avg}</td><td>${r.p3}</td><td>${r.max}</td></tr>`).join("");
+  $("tLine").querySelectorAll("th").forEach(e=>e.onclick=()=>{const k=e.dataset.k;sortDir=sortKey===k?-sortDir:-1;sortKey=k;tables()});
+}
+function drawHeat(){
+  if(heat)map.removeLayer(heat);
+  const g=data.grid,m=$("mode").value;
+  if(!g.length)return;
+  const v=g.map(c=>m==="delay"?c[3]:m==="traffic"?c[2]:c[4]/c[2]);
+  const s=[...v].sort((a,b)=>a-b),cap=s[Math.floor(s.length*.95)]||1;
+  heat=L.heatLayer(g.map((c,i)=>[c[0],c[1],Math.min(v[i]/cap,1)]),{radius:14,blur:18,max:1,minOpacity:.25}).addTo(map);
+}
+init();
+</script>
+</body>
+</html>
