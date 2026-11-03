@@ -1,0 +1,5 @@
+idsbk.db
+idsbk.db-journal
+cells.json
+__pycache__/
+*.pyc
