@@ -45,7 +45,8 @@ th{cursor:pointer;color:var(--mut);font-weight:600}
     <h2>Heatmapa <select id="mode">
       <option value="delay">súčet meškaní (kde sa meškanie hromadí)</option>
       <option value="share">podiel meškajúcich vozidiel (≥ 3 min)</option>
-      <option value="traffic">hustota premávky</option></select></h2>
+      <option value="traffic">hustota premávky</option></select>
+    <select id="style"><option value="smooth">plynulá</option><option value="grid">mriežka (presná, s detailom po nabehnutí myšou)</option></select></h2>
     <div id="map"></div>
   </div>
   <div class="grid2">
@@ -66,7 +67,8 @@ th{cursor:pointer;color:var(--mut);font-weight:600}
 <script>
 const WD=["Po","Ut","St","Št","Pi","So","Ne"], $=id=>document.getElementById(id);
 const TYPES={trolley:"Trolejbus",tram:"Električka",bus:"Autobus",train:"Vlak",urban:"MHD"};
-let idx,data,charts={},map,heat,sortKey="n",sortDir=-1;
+const GRID=0.004;
+let idx,data,charts={},map,layer,sortKey="n",sortDir=-1;
 Chart.defaults.color=getComputedStyle(document.body).color;
 Chart.defaults.borderColor="rgba(128,128,128,.2)";
 const j=async u=>{const r=await fetch(u);if(!r.ok)throw new Error(u);return r.json()};
@@ -78,10 +80,11 @@ async function init(){
   opt($("kind"),Object.entries(idx.kinds).map(([k,v])=>[k,v.label]));
   $("kind").value=idx.kinds.last7?"last7":Object.keys(idx.kinds)[0];
   fillValues();
-  map=L.map("map").setView([48.15,17.1],11);
+  map=L.map("map",{preferCanvas:true}).setView([48.15,17.1],11,{animate:false});
+  new ResizeObserver(()=>map.invalidateSize()).observe($("map"));
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18,attribution:"© OpenStreetMap contributors"}).addTo(map);
   ["kind","value","dtp"].forEach(id=>$(id).onchange=()=>{if(id==="kind")fillValues();else if(id==="value")fillDt();load()});
-  $("mode").onchange=drawHeat;
+  $("mode").onchange=drawHeat; $("style").onchange=drawHeat;
   trend(); load();
 }
 function fillValues(){
@@ -137,12 +140,22 @@ function tables(){
   $("tLine").querySelectorAll("th").forEach(e=>e.onclick=()=>{const k=e.dataset.k;sortDir=sortKey===k?-sortDir:-1;sortKey=k;tables()});
 }
 function drawHeat(){
-  if(heat)map.removeLayer(heat);
+  if(layer)map.removeLayer(layer);
   const g=data.grid,m=$("mode").value;
   if(!g.length)return;
+  map.invalidateSize();
   const v=g.map(c=>m==="delay"?c[3]:m==="traffic"?c[2]:c[4]/c[2]);
-  const s=[...v].sort((a,b)=>a-b),cap=s[Math.floor(s.length*.95)]||1;
-  heat=L.heatLayer(g.map((c,i)=>[c[0],c[1],Math.min(v[i]/cap,1)]),{radius:14,blur:18,max:1,minOpacity:.25}).addTo(map);
+  const sorted=[...v].sort((a,b)=>a-b),cap=sorted[Math.floor(sorted.length*.95)]||1;
+  if($("style").value==="grid"){
+    const rn=L.canvas({padding:.5}),hs=GRID/2;
+    layer=L.layerGroup(g.map((c,i)=>{const t=Math.min(v[i]/cap,1);
+      return L.rectangle([[c[0]-hs,c[1]-hs],[c[0]+hs,c[1]+hs]],
+        {renderer:rn,stroke:false,fillColor:`hsl(${60-60*t},95%,50%)`,fillOpacity:.25+.5*t})
+        .bindTooltip(`${c[2]} pozorovaní · priem. ${(c[3]/c[2]).toFixed(1)} min · ≥3 min: ${Math.round(100*c[4]/c[2])} %`)}));
+  }else{
+    layer=L.heatLayer(g.map((c,i)=>[c[0],c[1],Math.min(v[i]/cap,1)]),{radius:14,blur:18,max:1,minOpacity:.25});
+  }
+  layer.addTo(map);
 }
 init();
 </script>
